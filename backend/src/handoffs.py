@@ -24,7 +24,9 @@ def report_record(cur, hour_id):
 
 def snapshot(cur, hour_id):
     cur.execute('SELECT h.zone_number,s.name AS anchor,t.id AS task_id,t.status,t.cleared_queue,t.close_note '
-                'FROM hotspots h JOIN stores s ON s.id=h.anchor_store_id LEFT JOIN dispatch_tasks t ON t.hotspot_id=h.id '
+                'FROM hotspots h JOIN stores s ON s.id=h.anchor_store_id '
+                'LEFT JOIN hotspot_task_links lk ON lk.hotspot_id=h.id '
+                'LEFT JOIN dispatch_tasks t ON t.id=lk.task_id '
                 'WHERE h.hour_id=%s ORDER BY h.zone_number', (hour_id,))
     zones = cur.fetchall()
     cur.execute('SELECT p.kind,p.windows,p.median_queue,s.name,s.code,c.status AS coverage_status,c.waiver_reason '
@@ -34,7 +36,9 @@ def snapshot(cur, hour_id):
     points = cur.fetchall()
     cur.execute('SELECT l.name AS lane_name,b.moved_count,b.task_id '
                 'FROM lane_bookings b JOIN queue_lanes l ON l.id=b.lane_id '
-                'JOIN dispatch_tasks t ON t.id=b.task_id JOIN hotspots h ON h.id=t.hotspot_id '
+                'JOIN dispatch_tasks t ON t.id=b.task_id '
+                'JOIN hotspot_task_links lk ON lk.task_id=t.id '
+                'JOIN hotspots h ON h.id=lk.hotspot_id '
                 "WHERE h.hour_id=%s AND b.status='released' ORDER BY b.id", (hour_id,))
     lane_uses = cur.fetchall()
     watch = [row | {'median_queue': float(row['median_queue']) if row['median_queue'] is not None else None}

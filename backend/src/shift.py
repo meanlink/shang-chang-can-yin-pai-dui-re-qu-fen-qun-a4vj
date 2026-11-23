@@ -1,5 +1,6 @@
 from fastapi import HTTPException
 
+from . import continuation
 from .contracts import TaskStatus
 from .coverage import record_progress, require_resolved_orders
 from .density import QUEUE_THRESHOLD
@@ -67,29 +68,16 @@ def read_map(cur, hour_id):
                 'JOIN stores s ON s.id=p.store_id LEFT JOIN hotspots h ON h.id=p.hotspot_id '
                 'WHERE p.hour_id=%s ORDER BY s.code', (hour_id,))
     points = cur.fetchall()
-    cur.execute('SELECT h.*,s.name AS anchor,s.staging_point,t.id AS task_id FROM hotspots h '
-                'JOIN stores s ON s.id=h.anchor_store_id LEFT JOIN dispatch_tasks t ON t.hotspot_id=h.id '
+    cur.execute('SELECT h.*,s.name AS anchor,s.staging_point,l.task_id,l.origin AS link_origin '
+                'FROM hotspots h JOIN stores s ON s.id=h.anchor_store_id '
+                'LEFT JOIN hotspot_task_links l ON l.hotspot_id=h.id '
                 'WHERE h.hour_id=%s ORDER BY h.zone_number', (hour_id,))
     zones = cur.fetchall()
     return {'hour': hour, 'points': points, 'hotspots': zones}
 
 
-def confirm_zone(cur, hotspot_id, user):
-    cur.execute('SELECT h.status,s.staging_point FROM hotspots h JOIN stores s ON s.id=h.anchor_store_id '
-                'WHERE h.id=%s FOR UPDATE', (hotspot_id,))
-    hotspot = cur.fetchone()
-    if not hotspot:
-        raise HTTPException(404, '热区不存在')
-    if hotspot['status'] == 'confirmed':
-        cur.execute('SELECT id FROM dispatch_tasks WHERE hotspot_id=%s', (hotspot_id,))
-        return {'task_id': cur.fetchone()['id'], 'duplicate': True}
-    cur.execute("UPDATE hotspots SET status='confirmed',confirmed_by=%s WHERE id=%s", (user['id'], hotspot_id))
-    cur.execute('INSERT INTO dispatch_tasks(hotspot_id,staging_point,instruction) VALUES (%s,%s,%s)',
-                (hotspot_id, hotspot['staging_point'], '将队尾移至临时等候线，保持主通道畅通并复测队列'))
-    task_id = cur.lastrowid
-    audit(cur, user['id'], 'hotspot.confirmed', hotspot_id)
-    audit(cur, user['id'], 'task.assigned', task_id)
-    return {'task_id': task_id, 'duplicate': False}
+def confirm_zone(cur, hotspot_id, user, continue_task_id=None):
+    return continuation.confirm_zone(cur, hotspot_id, user, continue_task_id)
 
 
 def move_task(cur, task_id, user, clearance=None):

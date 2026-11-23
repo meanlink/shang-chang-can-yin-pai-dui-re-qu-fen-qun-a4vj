@@ -31,6 +31,7 @@ docker compose up -d --build --wait
 6. 运营确认热区后，系统以首选锚点禾野煲仔的东廊 E2 黄线创建疏导任务。
 7. `guide` 认领任务。13:05 复测 11 人时结案会被拒绝。
 8. 13:12 再次测得 4 人，填写“东廊队尾回到等候线内”，任务进入已结案。
+9. 切到同一楼层 `2026-11-21 13:00` 小时并封存分析，东廊热区与 12:00 有禾野煲仔等共同门店。若 12:00 的疏导单未结案，确认 13:00 热区时工作台给出接续候选；选择接续则沿用同一单号，「客流疏导」可见该单的两小时轨迹。桥边烤肉本小时已回落到阈值以下，不再成热区。
 
 ## 午高峰扩展流程
 
@@ -50,6 +51,19 @@ docker compose up -d --build --wait
 6. 最近两条须是连续窗口且均少于 8 人，运营方可结案。缺窗或回升至 8 人会推迟结案。疏导结束后可发布交接简报，其中交接当时仍在跟进的工单可由接班人继续处理，已发布快照保留当时状态。
 
 控流状态 `planned / active / resolved / cancelled` 定义于 `003_surge_response.sql`，规则见 `surge.py`、`surge_policy.py`，显示见 `surges.js` 与 `handoffs.js`。恢复状态 `open / monitoring / closed` 定义于 `004_tenant_recovery.sql`，规则见 `recovery.py`、`recovery_checks.py`，显示见 `recoveries.js`、`recovery-evidence.js` 与 `handoffs.js`。`peak_routes.py` 和 `peak_contracts.py` 提供 API 与输入校验。控流方式 `meter_entry / stagger_pickup` 在迁移、`SurgePlan` 和 `surges.js` 中定义。
+
+## 跨小时疏导单接续
+
+同层相邻两个小时的热区若包含共同门店，本小时在热区工作台确认热区时，系统先列出上小时同层、与本热区有共同门店且尚未结案（`assigned / active`）的疏导单作为接续候选：
+
+1. 有可接的单时，值班运营在候选单与“新派疏导单”之间选择；默认规则是优先接续，无单可接（上小时单都已结案，或没有共同门店）才新派。热区拆分或合并导致一张新热区对应多张旧单、或一张旧单覆盖多片新热区时，由值班人选接哪张单、接到哪片热区。
+2. 接续不新建疏导单，沿用原单编号、认领人和历次复测记录；两个小时都能凭同一单号查到原单，「客流疏导」里以“接续单/跨小时接续”展示该单经过的小时与热区轨迹。
+3. 上小时已封存但分析（`queued / failed`）或热区确认（仍有 `proposed`）未做完时，本小时派单被拦下，工作台提示先等分析和确认完成再派本小时的单。
+4. 同一张疏导单在同一个楼层小时只允许接到一片热区，由 `hotspot_task_links` 的 `UNIQUE(task_id,hour_id)` 兜底；两人同时提交不同去向时后到者收到 409，不会重复派单。确认请求超时重试是幂等的，已建关联的热区直接回原单号，不重复派单。
+5. 接续单仍按原流程认领、复测、等候线释放、控流与结案；结案后该单在所有接续小时都显示为已结案，下一小时若无未结案单可接则新派。
+
+接续关联表 `hotspot_task_links`（含旧数据卷 `origin` 回填）见 `005_hotspot_continuation.sql`，候选、封存等待、接续与幂等规则见 `continuation.py`，API 为 `GET /hotspots/{id}/continuation` 与增强后的 `POST /hotspots/{id}/confirm`（入参 `ZoneConfirm.continue_task_id`），显示见 `heat.js`、`tasks.js`。规则单元测试在 `backend/tests/test_continuation.py`，可用 `PYTHONPATH=backend python3 backend/tests/test_continuation.py` 运行（仅用标准库，stub 掉第三方依赖）。
+
 
 ## DBSCAN 口径
 

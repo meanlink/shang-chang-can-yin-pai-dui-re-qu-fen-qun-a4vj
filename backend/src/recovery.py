@@ -9,7 +9,8 @@ from .storage import audit
 def sources(cur, hour_id):
     cur.execute('SELECT p.store_id,p.kind,p.median_queue,s.name,s.code,r.id AS surge_id '
                 'FROM analysis_points p JOIN stores s ON s.id=p.store_id '
-                'LEFT JOIN dispatch_tasks t ON t.hotspot_id=p.hotspot_id '
+                'LEFT JOIN hotspot_task_links lk ON lk.hotspot_id=p.hotspot_id '
+                'LEFT JOIN dispatch_tasks t ON t.id=lk.task_id '
                 "LEFT JOIN surge_responses r ON r.task_id=t.id AND r.status='resolved' "
                 'WHERE p.hour_id=%s AND NOT EXISTS (SELECT 1 FROM tenant_recoveries c '
                 'WHERE c.hour_id=p.hour_id AND c.store_id=p.store_id) '
@@ -33,7 +34,8 @@ def open_case(cur, hour, data, actor):
     if not hour or hour['status'] != 'ready':
         raise HTTPException(409, '请先完成观测小时的热区分析')
     cur.execute('SELECT p.kind,p.median_queue,r.id AS surge_id FROM analysis_points p '
-                'LEFT JOIN dispatch_tasks t ON t.hotspot_id=p.hotspot_id '
+                'LEFT JOIN hotspot_task_links lk ON lk.hotspot_id=p.hotspot_id '
+                'LEFT JOIN dispatch_tasks t ON t.id=lk.task_id '
                 "LEFT JOIN surge_responses r ON r.task_id=t.id AND r.status='resolved' AND r.id=%s "
                 'WHERE p.hour_id=%s AND p.store_id=%s', (data.surge_id, hour['id'], data.store_id))
     point = cur.fetchone()

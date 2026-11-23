@@ -17,7 +17,8 @@ def list_bookings(cur, floor):
                 "SUM(CASE WHEN b.status IN ('booked','in_use') THEN b.seats ELSE 0 END) "
                 "OVER (PARTITION BY b.lane_id,b.slot_start) AS occupied "
                 'FROM lane_bookings b JOIN queue_lanes l ON l.id=b.lane_id JOIN dispatch_tasks t ON t.id=b.task_id '
-                'JOIN hotspots h ON h.id=t.hotspot_id JOIN stores s ON s.id=h.anchor_store_id '
+                'JOIN hotspot_task_links lk ON lk.task_id=t.id AND lk.origin=1 '
+                'JOIN hotspots h ON h.id=lk.hotspot_id JOIN stores s ON s.id=h.anchor_store_id '
                 "WHERE l.floor=%s ORDER BY (b.status IN ('booked','in_use')) DESC,b.slot_start DESC,b.id DESC", (floor,))
     return cur.fetchall()
 
@@ -46,8 +47,11 @@ def book(cur, data, actor):
     task = lock_task(cur, data.task_id)
     if task['status'] == 'closed':
         raise HTTPException(409, '已结案疏导单不能预留等候线')
-    cur.execute('SELECT f.floor,f.hour_start FROM floor_hours f JOIN hotspots h ON h.hour_id=f.id WHERE h.id=%s',
-                (task['hotspot_id'],))
+    cur.execute('SELECT f.floor,f.hour_start FROM floor_hours f '
+                'JOIN hotspots h ON h.hour_id=f.id '
+                'JOIN hotspot_task_links lk ON lk.hotspot_id=h.id AND lk.origin=1 '
+                'WHERE lk.task_id=%s',
+                (data.task_id,))
     hour = cur.fetchone()
     elapsed = data.slot_start - hour['hour_start']
     if not timedelta(hours=1) <= elapsed < timedelta(hours=3):

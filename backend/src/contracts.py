@@ -78,3 +78,8 @@ class Clearance(BaseModel):
     @classmethod
     def normalize_note(cls, value):
         return value.strip() if isinstance(value, str) else value
+
+
+class ZoneConfirm(BaseModel):
+    # 不传或为空表示无单可接、新派疏导单；传入上小时未结案单号表示接续该单。
+    continue_task_id: int | None = Field(default=None, gt=0)

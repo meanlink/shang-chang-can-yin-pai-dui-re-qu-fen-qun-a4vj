@@ -7,14 +7,18 @@ from .storage import audit
 
 def for_hour(cur, hour_id):
     cur.execute('SELECT r.*,h.zone_number,s.name AS anchor,t.handled_by FROM surge_responses r '
-                'JOIN dispatch_tasks t ON t.id=r.task_id JOIN hotspots h ON h.id=t.hotspot_id '
+                'JOIN dispatch_tasks t ON t.id=r.task_id '
+                'JOIN hotspot_task_links lk ON lk.task_id=t.id '
+                'JOIN hotspots h ON h.id=lk.hotspot_id '
                 'JOIN stores s ON s.id=h.anchor_store_id WHERE h.hour_id=%s ORDER BY r.id DESC', (hour_id,))
     return cur.fetchall()
 
 
 def eligible_tasks(cur, hour_id):
-    cur.execute('SELECT t.id,h.zone_number,s.name AS anchor,p.median_queue '
-                'FROM dispatch_tasks t JOIN hotspots h ON h.id=t.hotspot_id '
+    cur.execute('SELECT DISTINCT t.id,h.zone_number,s.name AS anchor,p.median_queue '
+                'FROM dispatch_tasks t '
+                'JOIN hotspot_task_links lk ON lk.task_id=t.id '
+                'JOIN hotspots h ON h.id=lk.hotspot_id '
                 'JOIN stores s ON s.id=h.anchor_store_id JOIN analysis_points p '
                 'ON p.hour_id=h.hour_id AND p.store_id=h.anchor_store_id '
                 "WHERE h.hour_id=%s AND t.status='active' AND NOT EXISTS (SELECT 1 FROM surge_responses r "
@@ -33,8 +37,10 @@ def plan(cur, data, actor):
     if task['status'] != 'active':
         raise HTTPException(409, '现场疏导员认领任务后才能启动临时控流')
     require_clear(cur, data.task_id)
-    cur.execute('SELECT p.median_queue FROM hotspots h JOIN analysis_points p '
-                'ON p.hour_id=h.hour_id AND p.store_id=h.anchor_store_id WHERE h.id=%s', (task['hotspot_id'],))
+    cur.execute('SELECT p.median_queue FROM dispatch_tasks t '
+                'JOIN hotspot_task_links lk ON lk.task_id=t.id AND lk.origin=1 '
+                'JOIN hotspots h ON h.id=lk.hotspot_id JOIN analysis_points p '
+                'ON p.hour_id=h.hour_id AND p.store_id=h.anchor_store_id WHERE t.id=%s', (data.task_id,))
     median = cur.fetchone()['median_queue']
     limit = surge_policy.require_trigger(data.reported_queue, median)
     cur.execute('INSERT INTO surge_responses(task_id,response_mode,baseline_queue,reported_queue,release_limit,plan_note,opened_by) '

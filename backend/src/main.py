@@ -12,7 +12,8 @@ from pymysql import IntegrityError, OperationalError
 
 from scripts.seed_demo import seed
 
-from .contracts import Clearance, FloorHourInput, ObservationInput, Role, SignIn, StoreInput
+from . import continuation
+from .contracts import Clearance, FloorHourInput, ObservationInput, Role, SignIn, StoreInput, ZoneConfirm
 from .extension_routes import router as extension_router
 from .peak_routes import router as peak_router
 from .security import authenticate, login, permit
@@ -141,19 +142,59 @@ def get_analysis(hour_id: int, _user=Depends(authenticate)):
 
 
 @app.post('/hotspots/{hotspot_id}/confirm')
-def approve_hotspot(hotspot_id: int, user=Depends(permit(Role.OPERATOR))):
+def approve_hotspot(hotspot_id: int, data: ZoneConfirm | None = None, user=Depends(permit(Role.OPERATOR))):
+    continue_task_id = data.continue_task_id if data else None
     with transaction() as cur:
-        return confirm_zone(cur, hotspot_id, user)
+        return confirm_zone(cur, hotspot_id, user, continue_task_id)
+
+
+@app.get('/hotspots/{hotspot_id}/continuation')
+def get_continuation(hotspot_id: int, _user=Depends(authenticate)):
+    with transaction() as cur:
+        context = continuation.hour_context(cur, hotspot_id)
+        if not context:
+            raise HTTPException(404, '热区不存在')
+        reason = continuation.continuation_blocked(cur, context['floor'], context['hour_start'])
+        members = continuation.hotspot_members(cur, hotspot_id)
+        candidates = continuation.continuation_candidates(
+            cur, context['floor'], context['hour_start'], members)
+        return {'blocked_reason': reason, 'candidates': candidates}
 
 
 @app.get('/tasks')
 def get_tasks(floor: int = Query(ge=1, le=4), _user=Depends(authenticate)):
     with transaction() as cur:
-        cur.execute('SELECT t.*, h.zone_number, f.hour_start, s.name AS anchor, u.username AS handler '
-                    'FROM dispatch_tasks t JOIN hotspots h ON h.id=t.hotspot_id '
-                    'JOIN floor_hours f ON f.id=h.hour_id JOIN stores s ON s.id=h.anchor_store_id '
-                    'LEFT JOIN users u ON u.id=t.handled_by WHERE f.floor=%s ORDER BY f.hour_start DESC,t.id', (floor,))
-        return cur.fetchall()
+        # 锚点固定取该单首次下发的原热区（origin=1），只保留在本楼层出现过的单。
+        cur.execute('SELECT t.*, sa.name AS anchor, u.username AS handler '
+                    'FROM dispatch_tasks t '
+                    'JOIN hotspot_task_links lo ON lo.task_id=t.id AND lo.origin=1 '
+                    'JOIN hotspots ho ON ho.id=lo.hotspot_id '
+                    'JOIN stores sa ON sa.id=ho.anchor_store_id '
+                    'LEFT JOIN users u ON u.id=t.handled_by '
+                    'WHERE EXISTS (SELECT 1 FROM hotspot_task_links lf JOIN hotspots hf ON hf.id=lf.hotspot_id '
+                    'JOIN floor_hours ff ON ff.id=hf.hotspot_id WHERE lf.task_id=t.id AND ff.floor=%s) '
+                    'ORDER BY t.id DESC', (floor,))
+        tasks = cur.fetchall()
+        if not tasks:
+            return []
+        task_ids = [task['id'] for task in tasks]
+        placeholders = ','.join(['%s'] * len(task_ids))
+        # 真实 DATETIME 交给 FastAPI 序列化成 ISO，前端 lanes.js 的时段计算才能正常解析。
+        cur.execute('SELECT lk.task_id, f.hour_start, h.zone_number '
+                    'FROM hotspot_task_links lk JOIN hotspots h ON h.id=lk.hotspot_id '
+                    'JOIN floor_hours f ON f.id=h.hour_id '
+                    f'WHERE lk.task_id IN ({placeholders}) ORDER BY f.hour_start', task_ids)
+        spans_by_task = {}
+        for row in cur.fetchall():
+            spans_by_task.setdefault(row['task_id'], []).append(
+                {'hour_start': row['hour_start'], 'zone_number': row['zone_number']})
+        for task in tasks:
+            spans = spans_by_task.get(task['id'], [])
+            task['spans'] = spans
+            task['continued'] = len(spans) > 1
+            task['hour_start'] = spans[0]['hour_start']
+            task['zone_number'] = spans[-1]['zone_number']
+        return tasks
 
 
 @app.post('/tasks/{task_id}/claim')

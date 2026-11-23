@@ -20,6 +20,16 @@ COUNTS = {
     'F3-307': [2, 4, 4, 6], 'F2-208': [11, 12, 13, 12],
 }
 
+# 下一小时（13:00）同层观测：东廊几家门店依旧排队，热区与 12:00 有共同门店，
+# 用于演示跨小时接续未结案疏导单；桥边烤肉这小时回落到阈值以下。
+NEXT_HOUR = datetime(2026, 11, 21, 13)
+NEXT_COUNTS = {
+    'F3-301': [11, 13, 14, 12], 'F3-302': [18, 19, 17, 16],
+    'F3-303': [9, 11, 12, 10], 'F3-304': [8, 9, 9, 10],
+    'F3-305': [4, 5, 5, 6], 'F3-306': [16, 18, 17],
+    'F3-307': [3, 3, 4, 5],
+}
+
 
 def seed():
     with transaction() as cur:
@@ -32,24 +42,29 @@ def seed():
         observer = cur.fetchone()['id']
         cur.executemany('INSERT INTO stores(code,name,floor,x,y,staging_point) VALUES (%s,%s,%s,%s,%s,%s) '
                         'ON DUPLICATE KEY UPDATE id=id', STORES)
-        for code, values in COUNTS.items():
-            cur.execute('SELECT id,floor FROM stores WHERE code=%s', (code,))
-            store = cur.fetchone()
-            if not store:
-                continue
-            start = datetime(2026, 11, 21, 12)
-            cur.execute('INSERT INTO floor_hours(floor,hour_start) VALUES (%s,%s) '
-                        'ON DUPLICATE KEY UPDATE id=id', (store['floor'], start))
-            cur.execute('SELECT id,status FROM floor_hours WHERE floor=%s AND hour_start=%s FOR UPDATE',
-                        (store['floor'], start))
-            hour = cur.fetchone()
-            if hour['status'] != 'collecting':
-                continue
-            cur.executemany('INSERT INTO observations(hour_id,store_id,window_start,queue_count,recorded_by) '
-                            'VALUES (%s,%s,%s,%s,%s) ON DUPLICATE KEY UPDATE id=id',
-                            [(hour['id'], store['id'], start.replace(minute=index * 15), count, observer)
-                             for index, count in enumerate(values)])
-        for table in ('users', 'stores', 'floor_hours', 'observations', 'hotspots', 'dispatch_tasks'):
+
+        def seed_hour(counts, start):
+            for code, values in counts.items():
+                cur.execute('SELECT id,floor FROM stores WHERE code=%s', (code,))
+                store = cur.fetchone()
+                if not store:
+                    continue
+                cur.execute('INSERT INTO floor_hours(floor,hour_start) VALUES (%s,%s) '
+                            'ON DUPLICATE KEY UPDATE id=id', (store['floor'], start))
+                cur.execute('SELECT id,status FROM floor_hours WHERE floor=%s AND hour_start=%s FOR UPDATE',
+                            (store['floor'], start))
+                hour = cur.fetchone()
+                if hour['status'] != 'collecting':
+                    continue
+                cur.executemany('INSERT INTO observations(hour_id,store_id,window_start,queue_count,recorded_by) '
+                                'VALUES (%s,%s,%s,%s,%s) ON DUPLICATE KEY UPDATE id=id',
+                                [(hour['id'], store['id'], start.replace(minute=index * 15), count, observer)
+                                 for index, count in enumerate(values)])
+
+        seed_hour(COUNTS, datetime(2026, 11, 21, 12))
+        seed_hour(NEXT_COUNTS, NEXT_HOUR)
+        for table in ('users', 'stores', 'floor_hours', 'observations', 'hotspots',
+                      'dispatch_tasks', 'hotspot_task_links'):
             cur.execute(f'SELECT COUNT(*) AS total FROM {table}')
             print(f"{table}={cur.fetchone()['total']}")
 
